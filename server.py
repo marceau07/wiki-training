@@ -18,6 +18,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 UPLOADS = DATA / "uploads"
+CALDIR = DATA / "calendars"
 STATIC = BASE / "static"
 DB_PATH = DATA / "wiki.db"
 SEED = BASE / "seed.json"
@@ -57,6 +58,7 @@ def now():
 def init_db():
     DATA.mkdir(exist_ok=True)
     UPLOADS.mkdir(exist_ok=True)
+    CALDIR.mkdir(exist_ok=True)
     with db() as c:
         c.executescript(
             """
@@ -71,6 +73,14 @@ def init_db():
                 favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS calendars (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                file TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '#d6154b',
+                created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,12 +178,16 @@ def reset(scope):
             c.execute("DELETE FROM files")
             for f in UPLOADS.glob("*"):
                 f.unlink(missing_ok=True)
+        if scope in ("calendars", "all", "factory"):
+            c.execute("DELETE FROM calendars")
+            for f in CALDIR.glob("*"):
+                f.unlink(missing_ok=True)
         if scope in ("all", "factory"):
             c.execute("DELETE FROM items")
             c.execute("DELETE FROM sqlite_sequence")
     if scope in ("factory", "seed"):
         return import_items(seed_items())
-    if scope not in KINDS + ("files", "all"):
+    if scope not in KINDS + ("files", "calendars", "all"):
         raise ApiError("scope invalide")
     return 0
 
@@ -204,6 +218,7 @@ def meta():
     with db() as c:
         rows = list(c.execute("SELECT kind, category, tags FROM items"))
         files = c.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        ncal = c.execute("SELECT COUNT(*) FROM calendars").fetchone()[0]
     cats, tags, counts = {}, {}, {k: 0 for k in KINDS}
     for r in rows:
         counts[r["kind"]] += 1
@@ -213,14 +228,25 @@ def meta():
             if t:
                 tags[t] = tags.get(t, 0) + 1
     counts["file"] = files
+    counts["calendar"] = ncal
     srt = lambda d: [{"name": k, "count": v} for k, v in sorted(d.items(), key=lambda x: fold(x[0]))]
     return {"categories": srt(cats), "tags": srt(tags), "counts": counts, "data_dir": str(DATA)}
+
+
+def safe_url(url):
+    """Encode en pourcentage les caractères non ASCII (accents, espaces) du chemin et de la requête."""
+    p = urllib.parse.urlsplit(url.strip())
+    keep = "/%:@!$&'()*+,;=~-._"
+    host = p.hostname.encode("idna").decode() if p.hostname else ""
+    netloc = (f"{p.username}:{p.password}@" if p.username else "") + host + (f":{p.port}" if p.port else "")
+    return urllib.parse.urlunsplit((p.scheme, netloc, urllib.parse.quote(p.path, safe=keep),
+                                    urllib.parse.quote(p.query, safe=keep + "?"), p.fragment))
 
 
 def fetch_title(url):
     if not re.match(r"^https?://", url, re.I):
         raise ApiError("URL invalide")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 WikiTraining"})
+    req = urllib.request.Request(safe_url(url), headers={"User-Agent": "Mozilla/5.0 WikiTraining"})
     with urllib.request.urlopen(req, timeout=6) as r:
         raw = r.read(400_000)
         charset = r.headers.get_content_charset() or "utf-8"
@@ -230,6 +256,67 @@ def fetch_title(url):
         return ""
     import html as htmllib
     return re.sub(r"\s+", " ", htmllib.unescape(m.group(1))).strip()
+
+
+def fetch_ics(url):
+    url = re.sub(r"^webcals?://", "https://", url.strip(), flags=re.I)
+    if not re.match(r"^https?://", url, re.I):
+        raise ApiError("L'adresse doit commencer par https:// ou webcal://")
+    req = urllib.request.Request(safe_url(url), headers={"User-Agent": "Mozilla/5.0 WikiTraining"})
+    with urllib.request.urlopen(req, timeout=12) as r:
+        raw = r.read(5_000_001)
+    if len(raw) > 5_000_000:
+        raise ApiError("Calendrier trop volumineux (5 Mo max)", 413)
+    text = raw.decode("utf-8-sig", errors="replace")
+    if "BEGIN:VCALENDAR" not in text:
+        raise ApiError("Cette adresse ne renvoie pas un calendrier .ics valide", 502)
+    return text
+
+
+def cal_color(v):
+    return v if re.fullmatch(r"#[0-9a-fA-F]{6}", str(v or "")) else "#d6154b"
+
+
+def calendars(handler, method, id_, sub):
+    with db() as c:
+        if id_ is None:
+            if method == "GET":
+                return handler.send_json([dict(r) for r in c.execute("SELECT * FROM calendars ORDER BY id")])
+            if method == "POST":
+                d = handler.json_body()
+                url = str(d.get("url", "")).strip()
+                if not re.match(r"^(https?|webcals?)://", url, re.I):
+                    raise ApiError("Adresse .ics invalide (https:// ou webcal://)")
+                name = str(d.get("name", "")).strip() or urllib.parse.urlparse(url).hostname or "Calendrier"
+                cur = c.execute("INSERT INTO calendars(name,url,color,created_at) VALUES(?,?,?,?)",
+                                (name, url, cal_color(d.get("color")), now()))
+                return handler.send_json({"id": cur.lastrowid}, 201)
+            raise ApiError("méthode non permise", 405)
+        r = c.execute("SELECT * FROM calendars WHERE id=?", (id_,)).fetchone()
+        if not r:
+            raise ApiError("calendrier introuvable", 404)
+        if sub == "ics" and method == "GET":
+            if r["file"]:
+                text = (CALDIR / r["file"]).read_text(encoding="utf-8-sig", errors="replace")
+            else:
+                try:
+                    text = fetch_ics(r["url"])
+                except ApiError:
+                    raise
+                except Exception as e:
+                    raise ApiError(f"Impossible de récupérer le calendrier : {e}", 502)
+            return handler.send_bytes(200, text.encode(), "text/calendar; charset=utf-8")
+        if method == "PUT":
+            d = handler.json_body()
+            c.execute("UPDATE calendars SET name=?, color=? WHERE id=?",
+                      (str(d.get("name") or r["name"]).strip(), cal_color(d.get("color") or r["color"]), id_))
+            return handler.send_json({"ok": True})
+        if method == "DELETE":
+            if r["file"]:
+                (CALDIR / r["file"]).unlink(missing_ok=True)
+            c.execute("DELETE FROM calendars WHERE id=?", (id_,))
+            return handler.send_json({"ok": True})
+    raise ApiError("méthode non permise", 405)
 
 
 def open_local(target):
@@ -313,6 +400,24 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"items(?:/(\d+))?", path)
         if m:
             return self.items(method, m.group(1), q)
+        m = re.fullmatch(r"calendars(?:/(\d+))?(?:/(ics))?", path)
+        if m:
+            return calendars(self, method, m.group(1), m.group(2))
+        if path == "calendar-upload" and method == "POST":
+            raw = self.body()
+            if len(raw) > 5_000_000:
+                raise ApiError("Fichier trop volumineux (5 Mo max)", 413)
+            text = raw.decode("utf-8-sig", errors="replace")
+            if "BEGIN:VCALENDAR" not in text:
+                raise ApiError("Ce fichier n'est pas un calendrier .ics valide")
+            orig = urllib.parse.unquote(self.headers.get("X-Filename") or "Calendrier")
+            name = re.sub(r"\.ics$", "", orig, flags=re.I)[:80] or "Calendrier"
+            fname = uuid.uuid4().hex[:12] + ".ics"
+            (CALDIR / fname).write_text(text, encoding="utf-8")
+            with db() as c:
+                cur = c.execute("INSERT INTO calendars(name,file,color,created_at) VALUES(?,?,?,?)",
+                                (name, fname, cal_color(self.headers.get("X-Color")), now()))
+            return self.send_json({"id": cur.lastrowid}, 201)
         m = re.fullmatch(r"open/(\d+)", path)
         if m and method == "POST":
             with db() as c:

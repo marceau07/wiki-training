@@ -88,6 +88,7 @@ function renderSide(q, parts) {
     ["#/list?kind=note", "📝 Notes", c.note, cur === "note" && !q.get("fav")],
     ["#/list?kind=link", "🔗 Liens", c.link, cur === "link" && !q.get("fav")],
     ["#/list?kind=local", "🖥️ Raccourcis locaux", c.local, cur === "local" && !q.get("fav")],
+    ["#/calendar", "📅 Calendrier", c.calendar, parts[0] === "calendar"],
     ["#/images", "🖼️ Images & fichiers", c.file, parts[0] === "images"],
     ["#/tools", "⚙️ Import / export", "", parts[0] === "tools"]];
   $("#nav").innerHTML = nav.map(([href, label, n, on]) => `<a href="${href}" class="${on ? "on" : ""}"><span>${label}</span><small>${n}</small></a>`).join("");
@@ -108,6 +109,7 @@ async function render() {
     else if (p === "list") await pageList(main, q);
     else if (p === "note") await pageNote(main, id);
     else if (p === "edit") await pageEdit(main, id, q);
+    else if (p === "calendar") await pageCalendar(main);
     else if (p === "images") await pageImages(main);
     else if (p === "tools") pageTools(main);
     else main.innerHTML = `<p class="empty">Page introuvable.</p>`;
@@ -152,8 +154,10 @@ async function pageHome(main) {
   main.innerHTML = `<img class="banner" src="/image1.png" alt="We are Be Web"><h1>Bienvenue 👋</h1><p class="sub">Ton espace de formation : notes, liens, raccourcis et captures, 100 % en local.</p>
   <form class="quick" id="quick"><input name="url" placeholder="Colle une adresse https://… puis Entrée : le titre est récupéré automatiquement"><button class="primary">Ajouter le lien</button></form>
   <div class="bar"><a class="btn primary" href="#/edit/new?kind=note">+ Note</a><a class="btn" href="#/edit/new?kind=link">+ Lien</a><a class="btn" href="#/edit/new?kind=local">+ Raccourci local</a></div>
+  <div id="upcoming"></div>
   <h2>⭐ Mes raccourcis</h2>${shortcuts.length ? `<div class="grid">${shortcuts.map(card).join("")}</div>` : `<p class="empty">Clique sur ☆ sur un lien pour l'épingler ici.</p>`}
   <h2>🕘 Derniers ajouts</h2><div class="grid">${recent.slice(0, 12).map(card).join("")}</div>`;
+  calUpcomingHtml().then(x => { const el = $("#upcoming"); if (el) el.innerHTML = x; }).catch(() => { });
   $("#quick").onsubmit = async e => {
     e.preventDefault();
     let url = new FormData(e.target).get("url").trim();
@@ -269,9 +273,10 @@ const RESETS = [
   { scope: "link", label: "Supprimer tous les liens", desc: "Efface tous les liens web.", btn: "Supprimer les liens", danger: true, n: c => c.link },
   { scope: "note", label: "Supprimer toutes les notes", desc: "Efface toutes les notes.", btn: "Supprimer les notes", danger: true, n: c => c.note },
   { scope: "local", label: "Supprimer les raccourcis locaux", desc: "Efface tous les raccourcis locaux.", btn: "Supprimer les raccourcis", danger: true, n: c => c.local },
+  { scope: "calendars", label: "Supprimer les calendriers", desc: "Retire tous les calendriers (liens et fichiers .ics importés).", btn: "Supprimer les calendriers", danger: true, n: c => c.calendar },
   { scope: "files", label: "Supprimer images et fichiers", desc: "Efface le contenu du dossier uploads (les notes qui les utilisent perdront leurs images).", btn: "Supprimer les fichiers", danger: true, n: c => c.file },
-  { scope: "factory", label: "Réinitialiser (retour à l'état initial)", desc: "Efface TOUT puis recharge le pack de départ.", btn: "Réinitialiser", danger: true, n: c => c.note + c.link + c.local + c.file },
-  { scope: "all", label: "Tout vider", desc: "Efface TOUT, sans pack de départ : wiki complètement vide.", btn: "Tout supprimer", danger: true, n: c => c.note + c.link + c.local + c.file },
+  { scope: "factory", label: "Réinitialiser (retour à l'état initial)", desc: "Efface TOUT puis recharge le pack de départ.", btn: "Réinitialiser", danger: true, n: c => c.note + c.link + c.local + c.file + c.calendar },
+  { scope: "all", label: "Tout vider", desc: "Efface TOUT, sans pack de départ : wiki complètement vide.", btn: "Tout supprimer", danger: true, n: c => c.note + c.link + c.local + c.file + c.calendar },
 ];
 
 function pageTools(main) {

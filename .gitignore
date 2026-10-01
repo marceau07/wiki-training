@@ -1,0 +1,4 @@
+# Données personnelles de chaque utilisateur (base SQLite, images, calendriers) : ne jamais versionner
+data/
+__pycache__/
+*.pyc

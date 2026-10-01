@@ -18,6 +18,7 @@ Arrêt : fermer la fenêtre noire (ou Ctrl+C).
 | Liens | colle une URL sur l'accueil : le titre est récupéré automatiquement |
 | Raccourcis locaux | ouvre un dossier, un `.msc`, un script, un partage réseau (confirmation avant ouverture) |
 | Images / PDF | Ctrl+V ou glisser-déposer dans une note, ou page *Images & fichiers* |
+| Calendrier | ajoute un lien `.ics` / `webcal://` (Google Agenda, Outlook, Moodle…) ou un fichier `.ics` ; vues Mois / Agenda, récurrences, fuseaux, bloc « À venir » sur l'accueil. Fichier de test : `exemple-planning.ics` |
 | Favoris | ★ épingle sur l'accueil |
 | Recherche | plein texte, insensible aux accents et à la casse (touche `/`) |
 | Import | favoris du navigateur (.html), ou lot JSON (partage entre apprenants / formateur) |
