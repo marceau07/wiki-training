@@ -19,6 +19,7 @@ Arrêt : fermer la fenêtre noire (ou Ctrl+C).
 | Raccourcis locaux | ouvre un dossier, un `.msc`, un script, un partage réseau (confirmation avant ouverture) |
 | Images / PDF | Ctrl+V ou glisser-déposer dans une note, ou page *Images & fichiers* |
 | Calendrier | ajoute un lien `.ics` / `webcal://` (Google Agenda, Outlook, Moodle…) ou un fichier `.ics` ; vues Mois / Agenda, récurrences, fuseaux, bloc « À venir » sur l'accueil. Fichier de test : `exemple-planning.ics` |
+| Langue | Français, English ou Español : sélecteur sous le bouton de thème (mémorisé ; par défaut, la langue du navigateur). Seule l'interface est traduite, pas tes notes ni le pack de départ |
 | Favoris | ★ épingle sur l'accueil |
 | Recherche | plein texte, insensible aux accents et à la casse (touche `/`) |
 | Import | favoris du navigateur (.html), ou lot JSON (partage entre apprenants / formateur) |
@@ -48,6 +49,6 @@ wiki/
   start.bat      lanceur Windows
   server.py      serveur + API + SQLite (stdlib uniquement)
   seed.json      contenu de départ
-  static/        interface (index.html, app.js, style.css)
+  static/        interface (index.html, app.js, calendar.js, i18n.js = traductions fr/en/es, style.css)
   data/          créé automatiquement (base + images)
 ```

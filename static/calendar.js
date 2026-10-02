@@ -4,8 +4,8 @@ const pad2 = n => String(n).padStart(2, "0");
 const dayKey = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const fmtTime = d => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-const fmtDay = d => d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+const fmtTime = d => d.toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+const fmtDay = d => d.toLocaleDateString(locale(), { weekday: "long", day: "numeric", month: "long" });
 
 // ------------------------------------------------------------ parsing ICS
 const TZMAP = { "W. Europe Standard Time": "Europe/Paris", "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest", "Central European Standard Time": "Europe/Warsaw", "GMT Standard Time": "Europe/London", "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago", "Pacific Standard Time": "America/Los_Angeles" };
@@ -131,7 +131,7 @@ async function calLoad(id, force) {
   if (!force && CAL.data[id]) return;
   try {
     const r = await fetch(`/api/calendars/${id}/ics`);
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    if (!r.ok) throw new Error(apiMessage(await r.json().catch(() => ({})), r.statusText));
     CAL.data[id] = { events: parseICS(await r.text()) };
   } catch (e) { CAL.data[id] = { events: [], err: e.message }; }
 }
@@ -156,7 +156,7 @@ function calOccurrences(from, to) {
 // ------------------------------------------------------------ rendu
 const linkify = t => h(t).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, "<br>");
 function timeLabel(o) {
-  if (o.allDay) return "Toute la journée";
+  if (o.allDay) return t("cal.allday");
   const same = dayKey(o.start) === dayKey(o.end);
   return same ? `${fmtTime(o.start)} – ${fmtTime(o.end)}` : `${fmtDay(o.start)} ${fmtTime(o.start)} → ${fmtDay(o.end)} ${fmtTime(o.end)}`;
 }
@@ -171,8 +171,8 @@ function byDay(occ) {
   return map;
 }
 function chip(o) {
-  const t = o.allDay ? "" : `<small>${fmtTime(o.start)}</small> `;
-  return `<div class="chip ${o.allDay ? "allday" : ""}" data-ev="${o.i}" style="--c:${o.cal.color}" title="${h(o.ev.summary)}">${t}${h(shortTitle(o.ev.summary))}</div>`;
+  const tm = o.allDay ? "" : `<small>${fmtTime(o.start)}</small> `;
+  return `<div class="chip ${o.allDay ? "allday" : ""}" data-ev="${o.i}" style="--c:${o.cal.color}" title="${h(o.ev.summary)}">${tm}${h(shortTitle(o.ev.summary))}</div>`;
 }
 function evCard(o) {
   return `<div class="evrow" data-ev="${o.i}" style="--c:${o.cal.color}" title="${h(o.ev.summary)}"><b>${h(shortTitle(o.ev.summary))}</b><span>${h(timeLabel(o))}${o.ev.loc ? " · 📍 " + h(o.ev.loc) : ""} · <em>${h(o.cal.name)}</em></span></div>`;
@@ -180,28 +180,28 @@ function evCard(o) {
 
 function calGrid(map) {
   const first = CAL.cursor, gs = addDays(first, -((first.getDay() + 6) % 7)), today = dayKey(new Date());
-  const names = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map(n => `<div class="dow">${n}</div>`).join("");
+  const names = t("cal.dow").split(",").map(n => `<div class="dow">${n}</div>`).join("");
   let cells = "";
   for (let i = 0; i < 42; i++) {
     const d = addDays(gs, i), k = dayKey(d), list = map[k] || [];
-    cells += `<div class="day ${d.getMonth() !== first.getMonth() ? "other" : ""} ${k === today ? "today" : ""}"><span class="dn">${d.getDate()}</span>${list.slice(0, 3).map(chip).join("")}${list.length > 3 ? `<button class="more" data-day="${k}">+${list.length - 3} autre(s)</button>` : ""}</div>`;
+    cells += `<div class="day ${d.getMonth() !== first.getMonth() ? "other" : ""} ${k === today ? "today" : ""}"><span class="dn">${d.getDate()}</span>${list.slice(0, 3).map(chip).join("")}${list.length > 3 ? `<button class="more" data-day="${k}">${t("cal.more", { n: list.length - 3 })}</button>` : ""}</div>`;
   }
   return `<div class="calgrid">${names}${cells}</div>`;
 }
 function calAgenda(map) {
   const keys = Object.keys(map).filter(k => k.slice(0, 7) === dayKey(CAL.cursor).slice(0, 7)).sort();
-  if (!keys.length) return `<p class="empty">Aucun événement ce mois-ci.</p>`;
+  if (!keys.length) return `<p class="empty">${t("cal.nomonthevents")}</p>`;
   return keys.map(k => { const [y, m, d] = k.split("-").map(Number); return `<h3 class="agday ${k === dayKey(new Date()) ? "today" : ""}">${h(fmtDay(new Date(y, m - 1, d)))}</h3>${map[k].map(evCard).join("")}`; }).join("");
 }
 
 // Titre raccourci pour la vue Semaine : on garde la partie utile après le dernier " - " si le titre est long
-function shortTitle(t) {
-  t = (t || "(sans titre)").trim();
-  if (t.length <= 40) return t;
-  const parts = t.split(/\s+[-–]\s+/);
+function shortTitle(title) {
+  title = (title || t("cal.untitled")).trim();
+  if (title.length <= 40) return title;
+  const parts = title.split(/\s+[-–]\s+/);
   const last = parts[parts.length - 1];
-  if (parts.length > 1 && last.length >= 8) t = last;
-  return t.length > 60 ? t.slice(0, 57).trimEnd() + "…" : t;
+  if (parts.length > 1 && last.length >= 8) title = last;
+  return title.length > 60 ? title.slice(0, 57).trimEnd() + "…" : title;
 }
 const HR = 46; // hauteur (px) d'une heure dans la vue semaine
 function calWeek(map) {
@@ -232,9 +232,9 @@ function calWeek(map) {
     flush();
   });
   const grid = `grid-template-columns:48px repeat(7,minmax(0,1fr))`;
-  const head = cols.map(c => `<div class="wkd ${dayKey(c.d) === today ? "today" : ""}">${c.d.toLocaleDateString("fr-FR", { weekday: "short" })} <b>${c.d.getDate()}</b></div>`).join("");
+  const head = cols.map(c => `<div class="wkd ${dayKey(c.d) === today ? "today" : ""}">${c.d.toLocaleDateString(locale(), { weekday: "short" })} <b>${c.d.getDate()}</b></div>`).join("");
   const anyAll = cols.some(c => c.allday.length);
-  const allRow = anyAll ? `<div class="wkrow" style="${grid}"><div class="gut">Jour</div>${cols.map(c => `<div class="wkall">${c.allday.map(chip).join("")}</div>`).join("")}</div>` : "";
+  const allRow = anyAll ? `<div class="wkrow" style="${grid}"><div class="gut">${t("cal.day")}</div>${cols.map(c => `<div class="wkall">${c.allday.map(chip).join("")}</div>`).join("")}</div>` : "";
   const hours = [...Array(maxH - minH)].map((_, i) => `<span style="top:${i * HR}px">${pad2(minH + i)}h</span>`).join("");
   const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
   const body = cols.map(c => `<div class="wkcol ${dayKey(c.d) === today ? "today" : ""}">${c.items.map(it => {
@@ -246,7 +246,7 @@ function calWeek(map) {
 }
 function weekTitle() {
   const a = CAL.week, b = addDays(a, 6), o = { day: "numeric", month: "short" };
-  return `${a.toLocaleDateString("fr-FR", o)} – ${b.toLocaleDateString("fr-FR", { ...o, year: "numeric" })}`;
+  return `${a.toLocaleDateString(locale(), o)} – ${b.toLocaleDateString(locale(), { ...o, year: "numeric" })}`;
 }
 
 async function pageCalendar(main) {
@@ -257,28 +257,28 @@ async function pageCalendar(main) {
     const occ = calOccurrences(gs, addDays(gs, wk ? 7 : 42)); CAL.occ = occ;
     const map = byDay(occ); CAL.map = map;
     $("#calbody").innerHTML = wk ? calWeek(map) : CAL.view === "month" ? calGrid(map) : calAgenda(map);
-    $("#caltitle").textContent = wk ? weekTitle() : first.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+    $("#caltitle").textContent = wk ? weekTitle() : first.toLocaleDateString(locale(), { month: "long", year: "numeric" });
     for (const [id, v] of [["vm", "month"], ["vw", "week"], ["va", "agenda"]]) $("#" + id).classList.toggle("primary", CAL.view === v);
   };
   const list = () => CAL.cals.length ? CAL.cals.map(c => {
     const d = CAL.data[c.id];
     return `<div class="calsrc" style="--c:${c.color}"><label><input type="checkbox" data-vis="${c.id}" ${CAL.hidden.has(c.id) ? "" : "checked"}><i></i> ${h(c.name)}</label>
-      <small>${c.file ? "fichier" : h(host(c.url))} · ${d?.err ? `<span class="danger">⚠ ${h(d.err)}</span>` : (d?.events.length ?? 0) + " événement(s)"}</small>
-      <span class="acts2">${c.file ? "" : `<button data-refresh="${c.id}" title="Actualiser">↻</button>`}<button data-rename="${c.id}" title="Renommer">✎</button><button data-delcal="${c.id}" class="danger" title="Supprimer">✕</button></span></div>`;
-  }).join("") : `<p class="empty">Aucun calendrier. Ajoute un lien .ics ou importe un fichier.</p>`;
+      <small>${c.file ? t("cal.file") : h(host(c.url))} · ${d?.err ? `<span class="danger">⚠ ${h(d.err)}</span>` : t("cal.events", { n: d?.events.length ?? 0 })}</small>
+      <span class="acts2">${c.file ? "" : `<button data-refresh="${c.id}" title="${t("cal.refresh")}">↻</button>`}<button data-rename="${c.id}" title="${t("cal.rename")}">✎</button><button data-delcal="${c.id}" class="danger" title="${t("delete")}">✕</button></span></div>`;
+  }).join("") : `<p class="empty">${t("cal.none")}</p>`;
 
-  main.innerHTML = `<h1>📅 Calendrier</h1><p class="sub">Affiche un ou plusieurs calendriers au format .ics (planning de formation, Google Agenda, Outlook, Moodle…).</p>
-  <div class="bar"><button id="prev">‹</button><button id="today">Aujourd'hui</button><button id="next">›</button><strong id="caltitle" style="min-width:150px;text-transform:capitalize"></strong><span class="grow"></span>
-    <button id="vm">Mois</button><button id="vw">Semaine</button><button id="va">Agenda</button><button id="addcal" class="primary">+ Calendrier</button></div>
+  main.innerHTML = `<h1>${t("cal.title")}</h1><p class="sub">${t("cal.sub")}</p>
+  <div class="bar"><button id="prev">‹</button><button id="today">${t("cal.today")}</button><button id="next">›</button><strong id="caltitle" style="min-width:150px;text-transform:capitalize"></strong><span class="grow"></span>
+    <button id="vm">${t("cal.month")}</button><button id="vw">${t("cal.week")}</button><button id="va">${t("cal.agenda")}</button><button id="addcal" class="primary">${t("cal.add")}</button></div>
   <div id="calbody"></div>
-  <h2>Mes calendriers</h2><div id="callist">${list()}</div>
-  <dialog id="evdlg"><div id="evcontent"></div><form method="dialog"><button>Fermer</button></form></dialog>
-  <dialog id="adddlg"><form id="addf" class="form"><h2 style="margin-top:0">Ajouter un calendrier</h2>
-    <label>Lien .ics ou webcal://<input name="url" placeholder="https://…/calendar.ics"></label>
-    <label>…ou fichier .ics<input name="file" type="file" accept=".ics,text/calendar"></label>
-    <div class="row2"><label>Nom (facultatif)<input name="name"></label><label>Couleur<input name="color" type="color" value="#d6154b" style="height:38px"></label></div>
-    <details><summary>Où trouver le lien ?</summary><p class="sub">Google Agenda : Paramètres du calendrier → « Adresse secrète au format iCal ». Outlook : Calendrier publié → lien ICS. Moodle : Calendrier → Exporter le calendrier. Ton formateur peut aussi te fournir un fichier .ics.</p></details>
-    <div class="bar"><span class="grow"></span><button type="button" id="canc">Annuler</button><button class="primary">Ajouter</button></div></form></dialog>`;
+  <h2>${t("cal.mine")}</h2><div id="callist">${list()}</div>
+  <dialog id="evdlg"><div id="evcontent"></div><form method="dialog"><button>${t("close")}</button></form></dialog>
+  <dialog id="adddlg"><form id="addf" class="form"><h2 style="margin-top:0">${t("cal.add.h")}</h2>
+    <label>${t("cal.add.url")}<input name="url" placeholder="https://…/calendar.ics"></label>
+    <label>${t("cal.add.file")}<input name="file" type="file" accept=".ics,text/calendar"></label>
+    <div class="row2"><label>${t("cal.add.name")}<input name="name"></label><label>${t("cal.add.color")}<input name="color" type="color" value="#d6154b" style="height:38px"></label></div>
+    <details><summary>${t("cal.help.sum")}</summary><p class="sub">${t("cal.help")}</p></details>
+    <div class="bar"><span class="grow"></span><button type="button" id="canc">${t("cancel")}</button><button class="primary">${t("cal.add.btn")}</button></div></form></dialog>`;
   draw();
 
   const rerender = () => pageCalendar(main);
@@ -306,16 +306,16 @@ async function pageCalendar(main) {
     try {
       if (file) await api("/calendar-upload", { method: "POST", body: file, headers: { "Content-Type": "text/calendar", "X-Filename": encodeURIComponent(f.name.value || file.name), "X-Color": f.color.value } });
       else if (f.url.value.trim()) await api("/calendars", { method: "POST", json: { url: f.url.value, name: f.name.value, color: f.color.value } });
-      else return toast("Indique un lien ou choisis un fichier");
-      $("#adddlg").close(); toast("Calendrier ajouté"); rerender();
+      else return toast(t("cal.need"));
+      $("#adddlg").close(); toast(t("cal.added")); rerender();
     } catch (err) { toast(err.message); }
   };
   main.onclick = async e => {
-    const t = e.target, ev = t.closest("[data-ev]"), more = t.closest("[data-day]");
+    const tg = e.target, ev = tg.closest("[data-ev]"), more = tg.closest("[data-day]");
     if (ev) {
       const o = CAL.occ[+ev.dataset.ev], x = o.ev;
-      $("#evcontent").innerHTML = `<h2 style="margin-top:0;color:${o.cal.color}">${h(x.summary || "(sans titre)")}</h2><p><b>${h(fmtDay(o.start))}</b><br>${h(timeLabel(o))}</p>
-        ${x.loc ? `<p>📍 ${linkify(x.loc)}</p>` : ""}${x.desc ? `<p>${linkify(x.desc)}</p>` : ""}${x.url ? `<p><a href="${h(x.url)}" target="_blank" rel="noopener">Lien</a></p>` : ""}<p class="sub">${h(o.cal.name)}</p>`;
+      $("#evcontent").innerHTML = `<h2 style="margin-top:0;color:${o.cal.color}">${h(x.summary || t("cal.untitled"))}</h2><p><b>${h(fmtDay(o.start))}</b><br>${h(timeLabel(o))}</p>
+        ${x.loc ? `<p>📍 ${linkify(x.loc)}</p>` : ""}${x.desc ? `<p>${linkify(x.desc)}</p>` : ""}${x.url ? `<p><a href="${h(x.url)}" target="_blank" rel="noopener">${t("cal.link")}</a></p>` : ""}<p class="sub">${h(o.cal.name)}</p>`;
       return $("#evdlg").showModal();
     }
     if (more) {
@@ -323,11 +323,11 @@ async function pageCalendar(main) {
       $("#evcontent").innerHTML = `<h2 style="margin-top:0">${h(fmtDay(new Date(y, m - 1, d)))}</h2>${CAL.map[more.dataset.day].map(evCard).join("")}`;
       return $("#evdlg").showModal();
     }
-    const id = t.dataset.refresh || t.dataset.rename || t.dataset.delcal;
-    if (t.dataset.vis) { const v = +t.dataset.vis; CAL.hidden.has(v) ? CAL.hidden.delete(v) : CAL.hidden.add(v); saveCal(); draw(); }
-    if (t.dataset.refresh) { await calLoad(+id, true); toast("Calendrier actualisé"); rerender(); }
-    if (t.dataset.rename) { const c = CAL.cals.find(x => x.id == id), n = prompt("Nouveau nom :", c.name); if (n) { await api(`/calendars/${id}`, { method: "PUT", json: { name: n } }); rerender(); } }
-    if (t.dataset.delcal && confirm("Supprimer ce calendrier du wiki ?")) { await api(`/calendars/${id}`, { method: "DELETE" }); delete CAL.data[id]; render(); }
+    const id = tg.dataset.refresh || tg.dataset.rename || tg.dataset.delcal;
+    if (tg.dataset.vis) { const v = +tg.dataset.vis; CAL.hidden.has(v) ? CAL.hidden.delete(v) : CAL.hidden.add(v); saveCal(); draw(); }
+    if (tg.dataset.refresh) { await calLoad(+id, true); toast(t("cal.refreshed")); rerender(); }
+    if (tg.dataset.rename) { const c = CAL.cals.find(x => x.id == id), n = prompt(t("cal.renameprompt"), c.name); if (n) { await api(`/calendars/${id}`, { method: "PUT", json: { name: n } }); rerender(); } }
+    if (tg.dataset.delcal && confirm(t("cal.confirmdel"))) { await api(`/calendars/${id}`, { method: "DELETE" }); delete CAL.data[id]; render(); }
   };
   $("#evdlg").addEventListener("click", e => { if (e.target.id === "evdlg") e.target.close(); });
 }
@@ -338,6 +338,6 @@ async function calUpcomingHtml() {
   await calEnsure();
   const n = new Date(), occ = calOccurrences(n, addDays(n, 14)).filter(o => o.end > n).slice(0, 6);
   occ.forEach((o, i) => o.i = i);
-  const rows = occ.map(o => `<a class="evrow" href="#/calendar" style="--c:${o.cal.color};color:inherit" title="${h(o.ev.summary)}"><b>${h(shortTitle(o.ev.summary))}</b><span>${h(fmtDay(o.start))} · ${h(o.allDay ? "toute la journée" : fmtTime(o.start))}${o.ev.loc ? " · 📍 " + h(o.ev.loc) : ""}</span></a>`).join("");
-  return `<h2>📅 À venir (14 jours)</h2>${rows || `<p class="sub">Rien de prévu. <a href="#/calendar">Ouvrir le calendrier</a></p>`}`;
+  const rows = occ.map(o => `<a class="evrow" href="#/calendar" style="--c:${o.cal.color};color:inherit" title="${h(o.ev.summary)}"><b>${h(shortTitle(o.ev.summary))}</b><span>${h(fmtDay(o.start))} · ${h(o.allDay ? t("cal.allday").toLowerCase() : fmtTime(o.start))}${o.ev.loc ? " · 📍 " + h(o.ev.loc) : ""}</span></a>`).join("");
+  return `<h2>${t("cal.upcoming")}</h2>${rows || `<p class="sub">${t("cal.upcoming.none")}</p>`}`;
 }

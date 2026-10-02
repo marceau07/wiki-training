@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -32,9 +33,13 @@ MAX_UPLOAD = 25 * 1024 * 1024
 
 
 class ApiError(Exception):
-    def __init__(self, message, code=400):
+    """Erreur API : `message` (français, repli) + `key`/`params` que l'interface traduit selon la langue choisie."""
+
+    def __init__(self, message, code=400, key=None, **params):
         super().__init__(message)
         self.code = code
+        self.key = key
+        self.params = params
 
 
 # ---------------------------------------------------------------- base de données
@@ -111,17 +116,17 @@ def norm_tags(tags):
 def clean(d):
     kind = d.get("kind")
     if kind not in KINDS:
-        raise ApiError("kind invalide")
+        raise ApiError("kind invalide", key="kind")
     title = str(d.get("title", "")).strip()
     url = str(d.get("url", "")).strip()
     if kind in ("link", "local") and not url:
-        raise ApiError("L'adresse est obligatoire")
+        raise ApiError("L'adresse est obligatoire", key="url_required")
     if kind == "link" and not re.match(r"^https?://", url, re.I):
-        raise ApiError("Un lien doit commencer par http:// ou https://")
+        raise ApiError("Un lien doit commencer par http:// ou https://", key="link_scheme")
     if not title:
         title = url if kind != "note" else ""
     if not title:
-        raise ApiError("Le titre est obligatoire")
+        raise ApiError("Le titre est obligatoire", key="title_required")
     return {
         "kind": kind, "title": title, "url": url,
         "body": str(d.get("body", "")),
@@ -188,7 +193,7 @@ def reset(scope):
     if scope in ("factory", "seed"):
         return import_items(seed_items())
     if scope not in KINDS + ("files", "calendars", "all"):
-        raise ApiError("scope invalide")
+        raise ApiError("scope invalide", key="scope")
     return 0
 
 
@@ -233,6 +238,40 @@ def meta():
     return {"categories": srt(cats), "tags": srt(tags), "counts": counts, "data_dir": str(DATA)}
 
 
+_ssl_ctx = None
+
+
+def ssl_context():
+    """Contexte TLS avec vérification des certificats.
+
+    Le Python installé depuis python.org sur macOS n'a aucune autorité racine (il faut lancer « Install
+    Certificates.command ») : sans repli, tout HTTPS échoue en CERTIFICATE_VERIFY_FAILED. On charge alors
+    certifi s'il est présent, sinon le magasin du système.
+    """
+    global _ssl_ctx
+    if _ssl_ctx:
+        return _ssl_ctx
+    ctx = ssl.create_default_context()
+    if not ctx.cert_store_stats().get("x509_ca"):
+        try:
+            import certifi  # noqa: PLC0415 - optionnel
+            ctx.load_verify_locations(certifi.where())
+        except Exception:  # noqa: BLE001
+            pass
+    if not ctx.cert_store_stats().get("x509_ca") and sys.platform == "darwin":
+        try:
+            pem = subprocess.run(
+                ["security", "find-certificate", "-a", "-p",
+                 "/System/Library/Keychains/SystemRootCertificates.keychain", "/Library/Keychains/System.keychain"],
+                capture_output=True, text=True, timeout=20, check=True).stdout
+            ctx.load_verify_locations(cadata=pem)
+        except Exception:  # noqa: BLE001
+            if os.path.exists("/etc/ssl/cert.pem"):
+                ctx.load_verify_locations("/etc/ssl/cert.pem")
+    _ssl_ctx = ctx
+    return ctx
+
+
 def safe_url(url):
     """Encode en pourcentage les caractères non ASCII (accents, espaces) du chemin et de la requête."""
     p = urllib.parse.urlsplit(url.strip())
@@ -245,9 +284,9 @@ def safe_url(url):
 
 def fetch_title(url):
     if not re.match(r"^https?://", url, re.I):
-        raise ApiError("URL invalide")
+        raise ApiError("URL invalide", key="url_invalid")
     req = urllib.request.Request(safe_url(url), headers={"User-Agent": "Mozilla/5.0 WikiTraining"})
-    with urllib.request.urlopen(req, timeout=6) as r:
+    with urllib.request.urlopen(req, timeout=6, context=ssl_context()) as r:
         raw = r.read(400_000)
         charset = r.headers.get_content_charset() or "utf-8"
     html = raw.decode(charset, errors="replace")
@@ -261,15 +300,15 @@ def fetch_title(url):
 def fetch_ics(url):
     url = re.sub(r"^webcals?://", "https://", url.strip(), flags=re.I)
     if not re.match(r"^https?://", url, re.I):
-        raise ApiError("L'adresse doit commencer par https:// ou webcal://")
+        raise ApiError("L'adresse doit commencer par https:// ou webcal://", key="ics_scheme")
     req = urllib.request.Request(safe_url(url), headers={"User-Agent": "Mozilla/5.0 WikiTraining"})
-    with urllib.request.urlopen(req, timeout=12) as r:
+    with urllib.request.urlopen(req, timeout=12, context=ssl_context()) as r:
         raw = r.read(5_000_001)
     if len(raw) > 5_000_000:
-        raise ApiError("Calendrier trop volumineux (5 Mo max)", 413)
+        raise ApiError("Calendrier trop volumineux (5 Mo max)", 413, "cal_big")
     text = raw.decode("utf-8-sig", errors="replace")
     if "BEGIN:VCALENDAR" not in text:
-        raise ApiError("Cette adresse ne renvoie pas un calendrier .ics valide", 502)
+        raise ApiError("Cette adresse ne renvoie pas un calendrier .ics valide", 502, "ics_bad_url")
     return text
 
 
@@ -286,15 +325,15 @@ def calendars(handler, method, id_, sub):
                 d = handler.json_body()
                 url = str(d.get("url", "")).strip()
                 if not re.match(r"^(https?|webcals?)://", url, re.I):
-                    raise ApiError("Adresse .ics invalide (https:// ou webcal://)")
+                    raise ApiError("Adresse .ics invalide (https:// ou webcal://)", key="ics_invalid")
                 name = str(d.get("name", "")).strip() or urllib.parse.urlparse(url).hostname or "Calendrier"
                 cur = c.execute("INSERT INTO calendars(name,url,color,created_at) VALUES(?,?,?,?)",
                                 (name, url, cal_color(d.get("color")), now()))
                 return handler.send_json({"id": cur.lastrowid}, 201)
-            raise ApiError("méthode non permise", 405)
+            raise ApiError("méthode non permise", 405, "method")
         r = c.execute("SELECT * FROM calendars WHERE id=?", (id_,)).fetchone()
         if not r:
-            raise ApiError("calendrier introuvable", 404)
+            raise ApiError("calendrier introuvable", 404, "cal_notfound")
         if sub == "ics" and method == "GET":
             if r["file"]:
                 text = (CALDIR / r["file"]).read_text(encoding="utf-8-sig", errors="replace")
@@ -304,7 +343,7 @@ def calendars(handler, method, id_, sub):
                 except ApiError:
                     raise
                 except Exception as e:
-                    raise ApiError(f"Impossible de récupérer le calendrier : {e}", 502)
+                    raise ApiError(f"Impossible de récupérer le calendrier : {e}", 502, "cal_fetch", msg=str(e))
             return handler.send_bytes(200, text.encode(), "text/calendar; charset=utf-8")
         if method == "PUT":
             d = handler.json_body()
@@ -316,7 +355,7 @@ def calendars(handler, method, id_, sub):
                 (CALDIR / r["file"]).unlink(missing_ok=True)
             c.execute("DELETE FROM calendars WHERE id=?", (id_,))
             return handler.send_json({"ok": True})
-    raise ApiError("méthode non permise", 405)
+    raise ApiError("méthode non permise", 405, "method")
 
 
 def open_local(target):
@@ -356,26 +395,26 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return json.loads(self.body() or b"{}")
         except ValueError:
-            raise ApiError("JSON invalide")
+            raise ApiError("JSON invalide", key="json")
 
     def handle_any(self, method):
         u = urllib.parse.urlparse(self.path)
         # Protection DNS-rebinding / requêtes inter-sites : on n'accepte que localhost + en-tête maison
         if self.headers.get("Host", "").split(":")[0] not in ("localhost", "127.0.0.1"):
-            return self.send_json({"error": "hôte refusé"}, 403)
+            return self.send_json({"error": "hôte refusé", "key": "host"}, 403)
         if method != "GET" and self.headers.get("X-Wiki") != "1":
-            return self.send_json({"error": "requête refusée"}, 403)
+            return self.send_json({"error": "requête refusée", "key": "denied"}, 403)
         try:
             if u.path.startswith("/api/"):
                 self.api(method, u.path[5:], urllib.parse.parse_qs(u.query))
             elif method == "GET":
                 self.static(u.path)
             else:
-                raise ApiError("introuvable", 404)
+                raise ApiError("introuvable", 404, "notfound")
         except ApiError as e:
-            self.send_json({"error": str(e)}, e.code)
+            self.send_json({"error": str(e), "key": e.key, "params": e.params}, e.code)
         except Exception as e:  # noqa: BLE001
-            self.send_json({"error": f"erreur interne : {e}"}, 500)
+            self.send_json({"error": f"erreur interne : {e}", "key": "internal", "params": {"msg": str(e)}}, 500)
 
     do_GET = lambda self: self.handle_any("GET")
     do_POST = lambda self: self.handle_any("POST")
@@ -389,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
             root, rel = STATIC, ("index.html" if path == "/" else path.lstrip("/"))
         f = (root / urllib.parse.unquote(rel)).resolve()
         if root.resolve() not in f.parents or not f.is_file():
-            raise ApiError("introuvable", 404)
+            raise ApiError("introuvable", 404, "notfound")
         types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg",
                  ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf"}
@@ -406,10 +445,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "calendar-upload" and method == "POST":
             raw = self.body()
             if len(raw) > 5_000_000:
-                raise ApiError("Fichier trop volumineux (5 Mo max)", 413)
+                raise ApiError("Fichier trop volumineux (5 Mo max)", 413, "file_big5")
             text = raw.decode("utf-8-sig", errors="replace")
             if "BEGIN:VCALENDAR" not in text:
-                raise ApiError("Ce fichier n'est pas un calendrier .ics valide")
+                raise ApiError("Ce fichier n'est pas un calendrier .ics valide", key="ics_bad_file")
             orig = urllib.parse.unquote(self.headers.get("X-Filename") or "Calendrier")
             name = re.sub(r"\.ics$", "", orig, flags=re.I)[:80] or "Calendrier"
             fname = uuid.uuid4().hex[:12] + ".ics"
@@ -423,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 r = c.execute("SELECT url FROM items WHERE id=? AND kind='local'", (m.group(1),)).fetchone()
             if not r:
-                raise ApiError("raccourci introuvable", 404)
+                raise ApiError("raccourci introuvable", 404, "shortcut_notfound")
             open_local(r["url"])
             return self.send_json({"ok": True})
         if path == "meta" and method == "GET":
@@ -462,7 +501,7 @@ class Handler(BaseHTTPRequestHandler):
                     (UPLOADS / r["name"]).unlink(missing_ok=True)
                     c.execute("DELETE FROM files WHERE id=?", (m.group(1),))
             return self.send_json({"ok": True})
-        raise ApiError("introuvable", 404)
+        raise ApiError("introuvable", 404, "notfound")
 
     def items(self, method, id_, q):
         with db() as c:
@@ -475,10 +514,10 @@ class Handler(BaseHTTPRequestHandler):
                         "INSERT INTO items(kind,title,url,body,category,tags,favorite,created_at,updated_at)"
                         " VALUES(:kind,:title,:url,:body,:category,:tags,:favorite,:t,:t)", {**d, "t": t})
                     return self.send_json({"id": cur.lastrowid}, 201)
-                raise ApiError("méthode non permise", 405)
+                raise ApiError("méthode non permise", 405, "method")
             r = c.execute("SELECT * FROM items WHERE id=?", (id_,)).fetchone()
             if not r:
-                raise ApiError("introuvable", 404)
+                raise ApiError("introuvable", 404, "notfound")
             if method == "GET":
                 return self.send_json(to_dict(r))
             if method == "PUT":
@@ -489,14 +528,14 @@ class Handler(BaseHTTPRequestHandler):
             if method == "DELETE":
                 c.execute("DELETE FROM items WHERE id=?", (id_,))
                 return self.send_json({"ok": True})
-        raise ApiError("méthode non permise", 405)
+        raise ApiError("méthode non permise", 405, "method")
 
     def upload(self):
         mime = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if mime not in UPLOAD_TYPES:
-            raise ApiError("Type de fichier non supporté (png, jpg, gif, webp, pdf)")
+            raise ApiError("Type de fichier non supporté (png, jpg, gif, webp, pdf)", key="filetype")
         if int(self.headers.get("Content-Length") or 0) > MAX_UPLOAD:
-            raise ApiError("Fichier trop gros (25 Mo max)", 413)
+            raise ApiError("Fichier trop gros (25 Mo max)", 413, "file_big25")
         data = self.body()
         orig = urllib.parse.unquote(self.headers.get("X-Filename") or "image")[:120]
         name = uuid.uuid4().hex[:12] + UPLOAD_TYPES[mime]

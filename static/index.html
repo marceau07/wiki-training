@@ -11,14 +11,20 @@
 <body>
 <aside id="side">
   <a class="brand" href="#/">📚 Wiki Training</a>
-  <input id="search" type="search" placeholder="Rechercher…  ( / )" autocomplete="off">
+  <input id="search" type="search" data-i18n-placeholder="search.placeholder" placeholder="Rechercher…  ( / )" autocomplete="off">
   <div class="logos"><img src="/image2.jpeg" alt="Beweb"><img class="wide" src="/image3.png" alt="Fondespierre"><img src="/Image4.jpeg" alt="École Régionale du Numérique"></div>
   <button id="themebtn" class="themebtn" type="button"></button>
+  <select id="langsel" class="langsel" data-i18n-aria-label="lang.label" aria-label="Langue">
+    <option value="fr">Français</option>
+    <option value="en">English</option>
+    <option value="es">Español</option>
+  </select>
   <nav id="nav"></nav>
   <div id="facets"></div>
   <div class="foot">Wiki Training · Beweb × Fondespierre</div>
 </aside>
 <main id="main"></main>
+<script src="/i18n.js"></script>
 <script src="/calendar.js"></script>
 <script src="/app.js"></script>
 </body>
